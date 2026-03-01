@@ -212,11 +212,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve projects: %w", err)
 	}
 
-	// Limit projects when --project was not explicitly set
-	if projectPath == "" && maxProjects > 0 && len(projects) > maxProjects {
-		projects = projects[:maxProjects]
-	}
-
 	if len(projects) == 0 {
 		fmt.Println("no projects configured")
 		return nil
@@ -251,6 +246,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		st:           st,
 		projects:     projects,
 		taskFilter:   taskFilter,
+		maxProjects:  maxProjects,
 		maxTasks:     maxTasks,
 		randomTask:   randomTask,
 		ignoreBudget: ignoreBudget,
@@ -273,6 +269,7 @@ type executeRunParams struct {
 	st           *state.State
 	projects     []string
 	taskFilter   string
+	maxProjects  int
 	maxTasks     int
 	randomTask   bool
 	ignoreBudget bool
@@ -438,7 +435,13 @@ func buildPreflight(p executeRunParams) (*preflightPlan, error) {
 		branch:       p.branch,
 	}
 
+	eligibleCount := 0
 	for _, projectPath := range p.projects {
+		// Apply --max-projects limit (counts only eligible, non-skipped projects)
+		if p.maxProjects > 0 && eligibleCount >= p.maxProjects {
+			break
+		}
+
 		// Skip if already processed today (unless task filter specified)
 		if p.taskFilter == "" && p.st.WasProcessedToday(projectPath) {
 			p.log.Infof("skip %s (processed today)", projectPath)
@@ -513,6 +516,9 @@ func buildPreflight(p executeRunParams) (*preflightPlan, error) {
 		}
 
 		plan.projects = append(plan.projects, pp)
+		if pp.skipReason == "" {
+			eligibleCount++
+		}
 	}
 
 	return plan, nil

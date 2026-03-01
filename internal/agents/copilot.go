@@ -25,10 +25,10 @@ import (
 // - Standalone: npm install -g @github/copilot or curl script
 // - Usage: copilot -p "<prompt>" --no-ask-user --silent
 type CopilotAgent struct {
-	binaryPath              string        // Path to binary: "gh" or "copilot" (default: "gh")
-	dangerouslySkipPerms    bool          // Pass --allow-all-tools --allow-all-urls
-	timeout                 time.Duration // Default timeout
-	runner                  CommandRunner // Command executor (for testing)
+	binaryPath           string        // Path to binary: "gh" or "copilot" (default: "gh")
+	dangerouslySkipPerms bool          // Pass --allow-all-tools --allow-all-urls
+	timeout              time.Duration // Default timeout
+	runner               CommandRunner // Command executor (for testing)
 }
 
 // CopilotOption configures a CopilotAgent.
