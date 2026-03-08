@@ -416,6 +416,7 @@ type preflightProject struct {
 	path       string
 	tasks      []tasks.ScoredTask
 	provider   *providerChoice
+	baseBranch string
 	skipReason string // non-empty if project was skipped
 }
 
@@ -659,11 +660,24 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 
 		choice := pp.provider
 		projectPath := pp.path
+		target, err := prepareExecutionTarget(ctx, projectPath)
+		if err != nil {
+			tasksFailed += len(pp.tasks)
+			projectFailed := len(pp.tasks)
+			_ = projectFailed
+			skipReasons = append(skipReasons, fmt.Sprintf("%s: prepare execution target failed: %v", filepath.Base(projectPath), err))
+			p.log.Errorf("prepare execution target for %s failed: %v", projectPath, err)
+			continue
+		}
+		execProjectPath := target.WorkDir
 
 		if isInteractive() {
 			displayProjectHeaderColored(projectPath, choice.name, choice.allowance, len(pp.tasks), pp.tasks)
 		} else {
 			fmt.Printf("\n=== Project: %s ===\n", projectPath)
+			if target.Isolated {
+				fmt.Printf("Worktree: %s\n", execProjectPath)
+			}
 			fmt.Printf("Provider: %s\n", choice.name)
 			fmt.Printf("Budget: %d tokens available (%.1f%% used, mode=%s)\n",
 				choice.allowance.Allowance, choice.allowance.UsedPercent, choice.allowance.Mode)
@@ -735,11 +749,11 @@ func executeRun(ctx context.Context, p executeRunParams) error {
 				TaskScore: scoredTask.Score,
 				CostTier:  scoredTask.Definition.CostTier.String(),
 				RunStart:  projectStart,
-				Branch:    p.branch,
+				Branch:    target.BaseBranch,
 			})
 
 			// Execute via orchestrator
-			result, err := orch.RunTask(ctx, taskInstance, projectPath)
+			result, err := orch.RunTask(ctx, taskInstance, execProjectPath)
 
 			// Clear assignment
 			p.st.ClearAssigned(taskInstance.ID)

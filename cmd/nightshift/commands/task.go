@@ -203,12 +203,19 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve branch: use flag value or detect current branch
+	// Resolve execution directory. Dirty repos are isolated into a clean
+	// worktree from origin/main when available so Nightshift changes do not
+	// mix with the user's in-progress work.
 	ctx := context.Background()
+	target, err := prepareExecutionTarget(ctx, projectPath)
+	if err != nil {
+		return fmt.Errorf("prepare execution target: %w", err)
+	}
+	execProjectPath := target.WorkDir
+
+	// Resolve branch metadata used in prompts.
 	if branch == "" {
-		if detected, err := orchestrator.CurrentBranch(ctx, projectPath); err == nil {
-			branch = detected
-		}
+		branch = target.BaseBranch
 	}
 
 	// Build the task
@@ -246,6 +253,9 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Task:     %s (%s)\n", def.Name, def.Type)
 	fmt.Printf("Provider: %s\n", provider)
 	fmt.Printf("Project:  %s\n", projectPath)
+	if target.Isolated {
+		fmt.Printf("Worktree: %s\n", execProjectPath)
+	}
 	if branch != "" {
 		fmt.Printf("Branch:   %s\n", branch)
 	}
@@ -276,7 +286,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
-	result, err := orch.RunTask(ctx, taskInstance, projectPath)
+	result, err := orch.RunTask(ctx, taskInstance, execProjectPath)
 	if err != nil {
 		return fmt.Errorf("task failed: %w", err)
 	}
