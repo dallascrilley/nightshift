@@ -151,8 +151,13 @@ func (a *ClaudeAgent) Execute(ctx context.Context, opts ExecuteOptions) (*Execut
 		}
 	}
 
+	// Prefer Claude Code subscription auth when an OAuth token or saved
+	// claude.ai session is available. Claude CLI prioritizes ANTHROPIC_API_KEY
+	// if both are set, which breaks subscription-backed headless runs.
+	cmdName, cmdArgs := a.commandSpec(ctx, args)
+
 	// Run command
-	stdout, stderr, exitCode, err := a.runner.Run(ctx, a.binaryPath, args, opts.WorkDir, stdinContent)
+	stdout, stderr, exitCode, err := a.runner.Run(ctx, cmdName, cmdArgs, opts.WorkDir, stdinContent)
 
 	result := &ExecuteResult{
 		Output:   stdout,
@@ -200,6 +205,48 @@ func (a *ClaudeAgent) ExecuteWithFiles(ctx context.Context, prompt string, files
 		Files:   files,
 		WorkDir: workDir,
 	})
+}
+
+// commandSpec returns the executable/args for Claude CLI invocation.
+func (a *ClaudeAgent) commandSpec(ctx context.Context, args []string) (string, []string) {
+	if strings.TrimSpace(os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")) != "" || a.hasSavedClaudeAIAuth(ctx) {
+		wrapped := append([]string{"-u", "ANTHROPIC_API_KEY", a.binaryPath}, args...)
+		return "env", wrapped
+	}
+	return a.binaryPath, args
+}
+
+// hasSavedClaudeAIAuth reports whether Claude CLI has a usable first-party
+// claude.ai session on disk. When true, Nightshift should not let a stale
+// ANTHROPIC_API_KEY override the subscription-backed login.
+func (a *ClaudeAgent) hasSavedClaudeAIAuth(ctx context.Context) bool {
+	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+		return false
+	}
+
+	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	stdout, _, exitCode, err := a.runner.Run(authCtx, "env", []string{"-u", "ANTHROPIC_API_KEY", a.binaryPath, "auth", "status"}, "", "")
+	if err != nil || exitCode != 0 {
+		return false
+	}
+
+	candidate := a.extractJSON([]byte(stdout))
+	if len(candidate) == 0 {
+		candidate = []byte(stdout)
+	}
+
+	var status struct {
+		LoggedIn    bool   `json:"loggedIn"`
+		AuthMethod  string `json:"authMethod"`
+		APIProvider string `json:"apiProvider"`
+	}
+	if err := json.Unmarshal(candidate, &status); err != nil {
+		return false
+	}
+
+	return status.LoggedIn && (status.AuthMethod == "claude.ai" || status.APIProvider == "firstParty")
 }
 
 // buildFileContext reads files and formats them as context.
