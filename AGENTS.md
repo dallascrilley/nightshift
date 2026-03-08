@@ -43,3 +43,9 @@ go test ./...
 - **Style**: Standard Go (gofmt, govet). No magic, explicit is better.
 - **Errors**: Wrap with context, don't swallow.
 - **Tests**: Table-driven, in `_test.go` files alongside code.
+
+## Git Remote Safety
+
+- Never push to the `marcus/nightshift` GitHub remote from this repo.
+- If a push is needed, stop after local commit(s) unless the configured remote is a user-writable fork.
+- Before any push, verify the target remote owner is not `marcus`.
