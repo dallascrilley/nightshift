@@ -17,6 +17,7 @@ type MockRunner struct {
 	ExitCode int
 	Err      error
 	Delay    time.Duration // Simulate slow command
+	RunFunc  func(ctx context.Context, name string, args []string, dir string, stdin string) (stdout, stderr string, exitCode int, err error)
 
 	// Captured values
 	CapturedName  string
@@ -30,6 +31,10 @@ func (m *MockRunner) Run(ctx context.Context, name string, args []string, dir st
 	m.CapturedArgs = args
 	m.CapturedDir = dir
 	m.CapturedStdin = stdin
+
+	if m.RunFunc != nil {
+		return m.RunFunc(ctx, name, args, dir, stdin)
+	}
 
 	if m.Delay > 0 {
 		select {
@@ -79,6 +84,122 @@ func TestClaudeAgent_Name(t *testing.T) {
 	agent := NewClaudeAgent()
 	if agent.Name() != "claude" {
 		t.Errorf("Name() = %q, want %q", agent.Name(), "claude")
+	}
+}
+
+func TestClaudeAgent_Execute_PrefersOAuthTokenOverAPIKey(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+
+	mock := &MockRunner{Stdout: "ok", ExitCode: 0}
+	agent := NewClaudeAgent(WithRunner(mock))
+
+	result, err := agent.Execute(context.Background(), ExecuteOptions{Prompt: "test prompt"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("Output = %q, want ok", result.Output)
+	}
+	if mock.CapturedName != "env" {
+		t.Fatalf("binary = %q, want %q", mock.CapturedName, "env")
+	}
+	want := []string{"-u", "ANTHROPIC_API_KEY", "claude", "--print", "--dangerously-skip-permissions", "test prompt"}
+	if len(mock.CapturedArgs) != len(want) {
+		t.Fatalf("args length = %d, want %d (%v)", len(mock.CapturedArgs), len(want), mock.CapturedArgs)
+	}
+	for i, arg := range want {
+		if mock.CapturedArgs[i] != arg {
+			t.Fatalf("args[%d] = %q, want %q (all=%v)", i, mock.CapturedArgs[i], arg, mock.CapturedArgs)
+		}
+	}
+}
+
+func TestClaudeAgent_Execute_PrefersSavedClaudeAIAuthOverAPIKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+
+	calls := 0
+	mock := &MockRunner{}
+	mock.RunFunc = func(ctx context.Context, name string, args []string, dir string, stdin string) (string, string, int, error) {
+		calls++
+		switch calls {
+		case 1:
+			want := []string{"-u", "ANTHROPIC_API_KEY", "claude", "auth", "status"}
+			if name != "env" {
+				t.Fatalf("auth check binary = %q, want env", name)
+			}
+			if len(args) != len(want) {
+				t.Fatalf("auth check args length = %d, want %d (%v)", len(args), len(want), args)
+			}
+			for i, arg := range want {
+				if args[i] != arg {
+					t.Fatalf("auth check args[%d] = %q, want %q (%v)", i, args[i], arg, args)
+				}
+			}
+			return `{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}`, "", 0, nil
+		case 2:
+			want := []string{"-u", "ANTHROPIC_API_KEY", "claude", "--print", "--dangerously-skip-permissions", "test prompt"}
+			if name != "env" {
+				t.Fatalf("execution binary = %q, want env", name)
+			}
+			if len(args) != len(want) {
+				t.Fatalf("execution args length = %d, want %d (%v)", len(args), len(want), args)
+			}
+			for i, arg := range want {
+				if args[i] != arg {
+					t.Fatalf("execution args[%d] = %q, want %q (%v)", i, args[i], arg, args)
+				}
+			}
+			return "saved-auth-ok", "", 0, nil
+		default:
+			t.Fatalf("unexpected extra runner call %d: %s %v", calls, name, args)
+			return "", "", 0, nil
+		}
+	}
+
+	agent := NewClaudeAgent(WithRunner(mock))
+	result, err := agent.Execute(context.Background(), ExecuteOptions{Prompt: "test prompt"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "saved-auth-ok" {
+		t.Fatalf("Output = %q, want saved-auth-ok", result.Output)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestClaudeAgent_Execute_PrefersSavedClaudeAIAuthWithExecRunner(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "api-key")
+
+	tmpDir := t.TempDir()
+	fakeClaude := filepath.Join(tmpDir, "fake-claude.sh")
+	script := `#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}\n'
+  exit 0
+fi
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  echo ANTHROPIC_API_KEY_was_set >&2
+  exit 9
+fi
+printf 'saved-auth-exec:%s\n' "$*"
+`
+	if err := os.WriteFile(fakeClaude, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := NewClaudeAgent(WithBinaryPath(fakeClaude))
+	result, err := agent.Execute(context.Background(), ExecuteOptions{Prompt: "test prompt"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v (result=%+v)", err, result)
+	}
+	if !result.IsSuccess() {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if !strings.Contains(result.Output, "saved-auth-exec:--print --dangerously-skip-permissions test prompt") {
+		t.Fatalf("unexpected output: %q", result.Output)
 	}
 }
 
